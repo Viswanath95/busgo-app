@@ -1,0 +1,115 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Get a free hosted Postgres database in seconds: `npx create-db`
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// Auth
+model User {
+  id           String    @id @default(uuid())
+  email        String    @unique
+  passwordHash String
+  name         String
+  phone        String?
+  role         Role      @default(USER)
+  bookings     Booking[]
+  createdAt    DateTime  @default(now())
+}
+enum Role {
+  USER
+  ADMIN
+}
+
+// Geography
+model Route {
+  id         String     @id @default(uuid())
+  from       String
+  to         String
+  distanceKm Int
+  schedules  Schedule[]
+}
+
+// Fleet
+model Bus {
+  id         String     @id @default(uuid())
+  name       String
+  type       BusType    @default(SLEEPER)
+  totalSeats Int        @default(40)
+  schedules  Schedule[]
+  seats      Seat[]
+}
+enum BusType {
+  SEATER
+  SLEEPER
+  AC_SLEEPER
+}
+
+// Seats pre-created per bus
+model Seat {
+  id           String        @id @default(uuid())
+  bus          Bus           @relation(fields: [busId], references: [id])
+  busId        String
+  seatNumber   String
+  deck         Deck          @default(LOWER)
+  bookingItems BookingItem[]
+  @@unique([busId, seatNumber])
+}
+enum Deck {
+  LOWER
+  UPPER
+}
+
+// Timetable
+model Schedule {
+  id            String    @id @default(uuid())
+  route         Route     @relation(fields: [routeId], references: [id])
+  routeId       String
+  bus           Bus       @relation(fields: [busId], references: [id])
+  busId         String
+  departureTime DateTime
+  arrivalTime   DateTime
+  baseFare      Decimal   @db.Decimal(10, 2)
+  bookings      Booking[]
+}
+
+// Booking header
+model Booking {
+  id              String        @id @default(uuid())
+  user            User          @relation(fields: [userId], references: [id])
+  userId          String
+  schedule        Schedule      @relation(fields: [scheduleId], references: [id])
+  scheduleId      String
+  pnr             String        @unique @default(cuid())
+  totalFare       Decimal       @db.Decimal(10, 2)
+  status          BookingStatus @default(CONFIRMED)
+  razorpayOrderId String?
+  razorpayPayId   String?
+  ticketUrl       String?
+  items           BookingItem[]
+  createdAt       DateTime      @default(now())
+}
+enum BookingStatus {
+  CONFIRMED
+  CANCELLED
+  BOARDED
+}
+
+// One row per seat per booking
+model BookingItem {
+  id            String   @id @default(uuid())
+  booking       Booking  @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  bookingId     String
+  seat          Seat     @relation(fields: [seatId], references: [id])
+  seatId        String
+  passengerName String
+  fare          Decimal  @db.Decimal(10, 2)
+}
+
