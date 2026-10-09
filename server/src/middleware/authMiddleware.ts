@@ -39,3 +39,23 @@ export function requireAdmin(req: Request, res: Response, next: NextFunction) {
     }
     next();
 }
+
+/**
+ * Like authMiddleware, but doesn't reject the request if there's no token.
+ * Use on public routes (like viewing a seat map) where we want to know
+ * WHO is asking if they're logged in, but still allow anonymous access.
+ */
+
+export function optionalAuth(req: Request, _res: Response, next: NextFunction) {
+    const header = req.headers.authorization;
+
+    if(header?.startsWith("Bearer ")) {
+        const token = header.substring(7);
+        try {
+            req.user = verifyToken(token);
+        }catch {
+             // Invalid/expired token on an optional route — just proceed as anonymous.
+        }
+    }
+    next();
+}
