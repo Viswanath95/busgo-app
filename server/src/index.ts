@@ -5,6 +5,7 @@ import cors from "cors";
 import authRoutes from "./routes/auth.routes";
 import routeRoutes from "./routes/route.routes";
 import scheduleRoutes from "./routes/schedule.routes";
+import seatRoutes from "./routes/seat.routes";
 import { errorHandler } from "./middleware/errorHandler";
 
 const app = express();
@@ -22,6 +23,7 @@ app.get("/", (_req, res) => {
 app.use("/api/auth", authRoutes);
 app.use("/api/routes", routeRoutes);
 app.use("/api/schedules", scheduleRoutes);
+app.use("/api/seats", seatRoutes);
 
 // Must be registered last — catches errors from every route above it.
 app.use(errorHandler);

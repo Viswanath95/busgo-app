@@ -19,3 +19,19 @@ export interface SeatStatus {
     status: SeatStatusValue;
     lockedByYou?: boolean;
 }
+export interface LockSeatsRequest {
+    scheduleId: string;
+    seatIds: string[];
+}
+
+export interface LockSeatsResponse {
+    scheduleId: string;
+    lockedSeatIds: string[];
+    expiresInSeconds: number;
+}
+
+export interface UnlockSeatsResponse {
+    scheduleId: string;
+    unlockedSeatIds: string[];
+    skippedSeatIds: string[]; // seats that weren't locked by you, left untouched
+}

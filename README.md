@@ -25,6 +25,8 @@ busgo/
 | POST | `/api/auth/login` | Public | Authenticate existing user, returns JWT |
 | GET | `/api/routes/search` | Public | Search schedules by route and date, with optional time-of-day filter |
 | GET | `/api/schedules/:id/seats` | Optional | Live seat map for a schedule (available / booked / locked) |
+| POST | `/api/seats/lock` | Required | Temporarily hold seats for 10 minutes |
+| POST | `/api/seats/unlock` | Required | Release seats you are holding |
 
 ### Search
 
@@ -46,6 +48,36 @@ busgo/
 - **lockedByYou** — included on locked seats; `true` only when a valid JWT is sent and it belongs to the user holding the lock
 
 The route is public, but sending a token lets the response tell you which locks are yours.
+
+### Seat locking
+
+`POST /api/seats/lock` and `POST /api/seats/unlock` both take the same body and require a Bearer token:
+
+```json
+{
+  "scheduleId": "uuid-of-the-schedule",
+  "seatIds": ["uuid-of-seat-1", "uuid-of-seat-2"]
+}
+```
+
+**Lock responses**
+
+| Status | Meaning |
+|---|---|
+| `200` | All seats locked; returns `lockedSeatIds` and `expiresInSeconds: 600` |
+| `400` | Invalid IDs, more than 6 seats, seats from a different bus, or the bus has already departed |
+| `404` | Schedule not found |
+| `409` | A seat is already booked, or currently held by another user |
+
+**How it works**
+
+- Each lock is a single atomic Redis command: `SET seat:{scheduleId}:{seatId} {userId} EX 600 NX`. `NX` means "only if the key doesn't exist", so when two users race for the same seat, exactly one succeeds and the other gets a 409.
+- The 10-minute expiry is part of the same command, so abandoned locks clear themselves with no cleanup job.
+- Locking several seats is all-or-nothing. If any seat is taken, the seats already grabbed in that request are released.
+- Locking a seat you already hold refreshes its 10-minute timer instead of failing.
+- Unlock releases only seats held by the caller, using a Lua script so the ownership check and delete happen atomically. Seats held by someone else are returned in `skippedSeatIds` and left untouched.
+
+**Why Redis TTL instead of a `locked_at` column in Postgres:** the lock is checked, written and timed in one atomic step, so there is no read-then-write race, and Redis expires stale locks itself instead of needing a cron job to sweep them.
 
 ## Setup
 
@@ -74,10 +106,11 @@ Running the seed script creates realistic sample data:
 - [x] **Day 1** — Monorepo scaffold, Tailwind client, Express + tsx server, Prisma schema (7 models), Neon DB connected and migrated
 - [x] **Day 2** — Auth API (register/login) with bcrypt + JWT, auth middleware, centralized error handling (Zod + Prisma errors), Prisma seed script with realistic demo data, tested end-to-end in Postman
 - [x] **Day 3** — Search API with date and time-of-day filters, seat status API merging PostgreSQL bookings with Redis locks, optional-auth middleware, Upstash Redis connected
+- [x] **Day 4** — Redis seat locking with atomic `SET NX EX`, lock/unlock APIs with ownership checks (Lua compare-and-delete), all-or-nothing multi-seat locking, concurrency verified with two simultaneous requests (one `200`, one `409`)
  
-Screenshots
+## Screenshots
 
-Database (Prisma Studio)
+### Database (Prisma Studio)
 
 ![Routes table in Prisma Studio](screenshots/prisma-studio-routes.png)
 
@@ -85,7 +118,7 @@ Database (Prisma Studio)
 
 ![Schedules table in Prisma Studio](screenshots/prisma-studio-schedules.png)
 
-Auth API (Postman)
+### Auth API (Postman)
 
 ![Successful register response in Postman](screenshots/register-success.png)
 
@@ -94,3 +127,9 @@ Auth API (Postman)
 ![Successful search buses response in Postman](screenshots/search-buses.png)
 
 ![Successful seat status response in Postman](screenshots/seat-status.png)
+
+### Seat Locking
+
+**Concurrent lock test — one 200, one 409**
+![Race test result](screenshots/race-test-result.png)
+
