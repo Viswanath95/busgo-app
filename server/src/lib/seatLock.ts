@@ -94,3 +94,26 @@ export async function verifySeatLocksHeld(
     const values = await redis.mget(...seatIds.map((id) => seatLockKey(scheduleId, id)));
     return values.every((holder) => holder === userId);
 }
+
+const EXTEND_IF_OWNER = `
+if redis.call("GET", KEYS[1]) == ARGV[1] then
+    return redis.call("EXPIRE", KEYS[1], ARGV[2])
+else
+    return 0
+end`;  
+
+export async function extendSeatLocks(
+    scheduleId: string,
+    seatIds: string[],
+    userId: string,
+    ttlSeconds: number
+): Promise<boolean> {
+    const results = await Promise.all(
+        seatIds.map((seatId) => 
+            redis.eval(EXTEND_IF_OWNER, 1, seatLockKey(scheduleId, seatId), userId, String(ttlSeconds))
+        )
+    );
+    return results.every((r) => r === 1);
+}
+    
+

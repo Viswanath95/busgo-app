@@ -78,6 +78,7 @@ model Schedule {
   arrivalTime   DateTime
   baseFare      Decimal   @db.Decimal(10, 2)
   bookings      Booking[]
+  items         BookingItem[]
 }
 
 // Booking header
@@ -107,9 +108,13 @@ model BookingItem {
   id            String   @id @default(uuid())
   booking       Booking  @relation(fields: [bookingId], references: [id], onDelete: Cascade)
   bookingId     String
+  schedule      Schedule @relation(fields: [scheduleId], references: [id])
+  scheduleId    String
   seat          Seat     @relation(fields: [seatId], references: [id])
   seatId        String
   passengerName String
   fare          Decimal  @db.Decimal(10, 2)
+
+  @@unique([scheduleId, seatId])
 }
 
