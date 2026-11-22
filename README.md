@@ -1,6 +1,6 @@
 # BusGo
 
-A full-stack bus ticket booking platform with real-time seat selection, Razorpay payments, and PDF ticket generation.
+A full-stack bus ticket booking platform with real-time seat selection, Razorpay payments, and PDF e-tickets delivered by email.
 
 ## Tech Stack
 
@@ -9,6 +9,8 @@ A full-stack bus ticket booking platform with real-time seat selection, Razorpay
 **Database:** PostgreSQL (Neon, serverless)
 **Cache / Seat Locks:** Redis (Upstash, via ioredis)
 **Payments:** Razorpay (test mode)
+**Background jobs:** pg-boss (job queue on PostgreSQL)
+**Tickets:** PDFKit + qrcode (PDF with QR), Nodemailer (Gmail SMTP)
 **Infra (planned):** Vercel (client), Render (server)
 
 ## Project Structure
@@ -29,11 +31,13 @@ busgo/
 | POST | `/api/seats/lock` | Required | Temporarily hold seats for 10 minutes |
 | POST | `/api/seats/unlock` | Required | Release seats you are holding |
 | POST | `/api/payments/create-order` | Required | Verify seat locks, price the booking, create a Razorpay order |
-| POST | `/api/payments/verify` | Required | Verify the payment signature, then write the booking atomically |
+| POST | `/api/payments/verify` | Required | Verify the payment signature, write the booking atomically, queue the ticket |
+| GET | `/api/bookings/:id/ticket` | Required | Ticket status; returns a `downloadUrl` when the PDF is ready |
+| GET | `/api/bookings/:id/ticket/file` | Required | Download the ticket PDF (owner or admin only) |
 
 ### Search
 
-`GET /api/routes/search?from=Chennai&to=Bangalore&date=2026-09-20&time=night`
+`GET /api/routes/search?from=Chennai&to=Bangalore&date=2026-11-23`
 
 | Param | Required | Description |
 |---|---|---|
@@ -87,7 +91,7 @@ The route is public, but sending a token lets the response tell you which locks 
 Booking is a two-step flow. Both endpoints require a Bearer token, and both must be called by the same user who locked the seats.
 
 ```
-Lock seats → POST /payments/create-order → Razorpay checkout → POST /payments/verify → booking saved
+Lock seats → POST /payments/create-order → Razorpay checkout → POST /payments/verify → booking saved → ticket queued
 ```
 
 **`POST /api/payments/create-order`**
@@ -138,8 +142,41 @@ Lock seats → POST /payments/create-order → Razorpay checkout → POST /payme
 - **Double-booking guard:** `BookingItem` has `@@unique([scheduleId, seatId])`. Even if a Redis lock expired at the wrong moment, the database rejects the second booking, and the user is refunded.
 - **Idempotent:** retrying `verify` for an order that's already booked returns the same PNR instead of creating a duplicate.
 - **Cleanup order:** Redis locks are released only after the database commit succeeds, so a failed write leaves the user's lock intact for a retry.
+- **Ticket job:** after the commit, a ticket job is queued without waiting for it, so `verify` responds immediately.
 
 **Why `scheduleId` is also stored on `BookingItem`:** a unique constraint can only use columns of its own table. Copying `scheduleId` onto `BookingItem` lets Postgres enforce "one seat, once per schedule" directly.
+
+### E-tickets and background jobs
+
+Generating a PDF and sending an email take seconds, so they don't run inside the payment request. They run as a background job.
+
+```
+/verify commits the booking → job { bookingId } added to the queue → /verify responds
+                                    ↓ (background worker, same server process)
+      load booking → build PDF with QR → save file → set ticketUrl → email the PDF
+```
+
+**`GET /api/bookings/:id/ticket`**
+
+| Status | Meaning |
+|---|---|
+| `200` | `{ "status": "ready", "downloadUrl": "/api/bookings/:id/ticket/file" }` |
+| `202` | `{ "status": "processing" }`; the ticket is still being generated, try again shortly |
+| `403` | The booking belongs to another user (admins can access any booking) |
+| `404` | Booking not found |
+
+`GET /api/bookings/:id/ticket/file` streams the PDF. It goes through an ownership check, so tickets are never served from a public folder.
+
+**The ticket PDF** has the BusGo header, PNR, passenger names and seat numbers, route, departure and arrival times (in IST), the fare, and a QR code that encodes the `bookingId` so the boarding scanner (Day 12) can look the booking up.
+
+**Why pg-boss (jobs in PostgreSQL) instead of a Redis queue:**
+- Jobs live in the Neon database that is already part of the stack, so there's no extra service to run, and the queue doesn't use up the free Upstash command quota.
+- Failed jobs retry automatically (3 retries, 10 seconds apart). The worker is idempotent, so a retry safely overwrites the same PDF.
+- Each job uses the `bookingId` as its job id, so a retried `verify` can never queue two tickets for one booking.
+
+**Built for Neon's free tier:** pg-boss normally polls the database every 2 seconds, which would keep a serverless database awake permanently. Here its background maintenance and scheduler loops are turned off, and the worker only polls every 10 minutes as a safety net. New jobs don't wait for that, because the API wakes the worker in-process the moment a job is queued. In a local test the idle polling went from about 120 transactions a minute with default settings to none.
+
+**Storage:** PDFs are saved to `server/uploads/` for development. For production this is one function to swap for object storage such as Cloudflare R2, because Render's free disk is wiped on redeploy.
 
 ## Setup
 
@@ -151,10 +188,13 @@ Lock seats → POST /payments/create-order → Razorpay checkout → POST /payme
    - `JWT_SECRET` — any long random string (generate with `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`)
    - `REDIS_URL` — your Upstash Redis TLS connection string (starts with `rediss://`)
    - `RAZORPAY_KEY_ID` and `RAZORPAY_KEY_SECRET` — test-mode keys from the Razorpay dashboard (Test mode → Account & Settings → API Keys → Generate Key). Never commit real keys.
-   - `PORT` — defaults to 5000
+    - `SMTP_USER` and `SMTP_PASS` — a Gmail address and a Gmail **app password** (Google Account → Security → 2-Step Verification → App passwords). Optional: if they're empty, tickets are still generated but not emailed.
+    - `PORT` — defaults to 5000
 5. `cd server && npx prisma migrate dev` — creates all 7 tables on Neon
 6. `npx prisma db seed` — populates 3 routes, 6 buses, 240 seats, 42 schedules
 7. Run both dev servers separately: `npm run dev` in `client/` and `npm run dev` in `server/`
+
+Requires **Node 22.12 or newer** (pg-boss). The first server start also creates a `pgboss` schema in the database for the job queue; Prisma only manages the `public` schema.
 
 ## Demo Data
 
@@ -173,8 +213,9 @@ Schedules cover 7 days from the day the seed was run. If searches return nothing
 - [x] **Day 3** — Search API with date and time-of-day filters, seat status API merging PostgreSQL bookings with Redis locks, optional-auth middleware, Upstash Redis connected
 - [x] **Day 4** — Redis seat locking with atomic `SET NX EX`, lock/unlock APIs with ownership checks (Lua compare-and-delete), all-or-nothing multi-seat locking, concurrency verified with two simultaneous requests (one `200`, one `409`)
 - [x] **Day 5** — Razorpay test-mode integration: server-priced orders, HMAC-SHA256 signature verification, atomic booking write with `prisma.$transaction()`, idempotent verify, `(scheduleId, seatId)` unique constraint as a database-level double-booking guard
- 
-## Screenshots
+- [x] **Day 6** — Async e-tickets: pg-boss job queue on PostgreSQL (retries, per-booking dedupe, tuned to let a serverless database sleep), PDFKit ticket with QR code, Nodemailer email with the PDF attached, authenticated ticket download endpoints; `/verify` no longer waits for PDF or email work
+
+ ## Screenshots
 
 ### Database (Prisma Studio)
 
@@ -216,4 +257,15 @@ Schedules cover 7 days from the day the seed was run. If searches return nothing
 
 **Order in the Razorpay test dashboard**
 ![Razorpay dashboard](screenshots/day5-razorpay-dashboard.png)
+
+### E-tickets
+
+**Generated ticket PDF**
+![Ticket PDF](screenshots/day6-ticket-pdf.png)
+
+**Ticket delivered by email**
+![Ticket email](screenshots/day6-ticket-email.png)
+
+**Background worker log**
+![Worker log](screenshots/day6-worker-log.png)
 

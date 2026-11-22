@@ -7,3 +7,5 @@ node_modules
 race-test.mjs
 
 sign-test.mjs
+
+uploads/

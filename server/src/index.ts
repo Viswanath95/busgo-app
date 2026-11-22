@@ -7,6 +7,8 @@ import routeRoutes from "./routes/route.routes";
 import scheduleRoutes from "./routes/schedule.routes";
 import seatRoutes from "./routes/seat.routes";
 import paymentRoutes from "./routes/payment.routes";
+import bookingRoutes from "./routes/booking.routes";
+import { startTicketWorker } from "./workers/ticketWorker";
 import { errorHandler } from "./middleware/errorHandler";
 
 const app = express();
@@ -26,10 +28,12 @@ app.use("/api/routes", routeRoutes);
 app.use("/api/schedules", scheduleRoutes);
 app.use("/api/seats", seatRoutes);
 app.use("/api/payments", paymentRoutes);
+app.use("/api/bookings", bookingRoutes);
 
 // Must be registered last — catches errors from every route above it.
 app.use(errorHandler);
 
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
+  startTicketWorker().catch((err) => console.error("Failed to start ticket worker:", err));
 });

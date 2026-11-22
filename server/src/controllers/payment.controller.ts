@@ -6,6 +6,7 @@ import { redis } from "../lib/redis";
 import { razorpay, RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET } from "../lib/razorpay";
 import { extendSeatLocks, releaseSeatLocks, verifySeatLocksHeld } from "../lib/seatLock";
 import { Prisma } from "../generated/prisma/client";
+import { enqueueTicket } from "../lib/ticketQueue";
 
 const PAYMENT_WINDOW_SECONDS = 15 * 60; // seat locks are extended to this at create-order
 const ORDER_CONTEXT_TTL_SECONDS = 30 * 60;
@@ -165,6 +166,11 @@ export async function verifyPayment(req: Request, res: Response) {
         // 5. Only AFTER the DB commit: free Redis
         await releaseSeatLocks(ctx.scheduleId, seatIds, userId);
         await redis.del(orderKey(orderId));
+
+        // Fire-and-forget: payment is done, the ticket is built in the background
+        enqueueTicket(booking.id).catch((e) => 
+            console.error("Failed to enqueue ticket job for booking", booking.id, e)
+        );
 
         return res.status(201).json({ bookingId: booking.id, pnr: booking.pnr });
     } catch(err) {
